@@ -1,13 +1,14 @@
+import hmac
 import time
 
-from django.core.cache import cache
-from django.http.response import HttpResponse
+from django.conf import settings
+from django.http.response import HttpResponse, JsonResponse
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from terminal.utils import ComponentsPrometheusMetricsUtil
-from users.models import User
+from .metrics import CoreMetricsUtil, get_db_status, get_redis_status
 
 
 class HealthApiMixin(APIView):
@@ -19,30 +20,11 @@ class HealthCheckView(HealthApiMixin):
 
     @staticmethod
     def get_db_status():
-        t1 = time.time()
-        try:
-            ok = User.objects.first() is not None
-            t2 = time.time()
-            return ok, t2 - t1
-        except Exception as e:
-            return False, str(e)
+        return get_db_status()
 
     @staticmethod
     def get_redis_status():
-        key = 'HEALTH_CHECK'
-
-        t1 = time.time()
-        try:
-            value = '1'
-            cache.set(key, '1', 10)
-            got = cache.get(key)
-            t2 = time.time()
-
-            if value == got:
-                return True, t2 - t1
-            return False, 'Value not match'
-        except Exception as e:
-            return False, str(e)
+        return get_redis_status()
 
     def get(self, request):
         redis_status, redis_time = self.get_redis_status()
@@ -60,9 +42,62 @@ class HealthCheckView(HealthApiMixin):
 
 
 class PrometheusMetricsApi(HealthApiMixin):
+    """
+    Prometheus exposition endpoint, designed to be scraped by Prometheus
+    and visualized with the Grafana dashboards shipped in utils/grafana/.
+
+    Scopes (?scope=):
+      - components: terminal component metrics (historical behavior)
+      - core: application level metrics of the core service
+      - all (default): both
+
+    If HEALTH_CHECK_TOKEN is configured, requests must carry it either as
+    `?token=<token>` or `Authorization: Bearer <token>`. When the token is
+    empty (default) the endpoint stays open, keeping backward compatibility.
+    """
     permission_classes = (AllowAny,)
 
-    def get(self, request, *args, **kwargs):
+    @staticmethod
+    def get_request_token(request):
+        token = request.query_params.get('token')
+        if token:
+            return token
+        auth_header = request.META.get('HTTP_AUTHORIZATION', '')
+        prefix = 'Bearer '
+        if auth_header.startswith(prefix):
+            return auth_header[len(prefix):]
+        return ''
+
+    def is_token_valid(self, request):
+        required_token = getattr(settings, 'HEALTH_CHECK_TOKEN', '') or ''
+        if not required_token:
+            return True
+        token = self.get_request_token(request) or ''
+        return hmac.compare_digest(required_token, token)
+
+    @staticmethod
+    def get_components_metrics_text():
         util = ComponentsPrometheusMetricsUtil()
-        metrics_text = util.get_prometheus_metrics_text()
+        return util.get_prometheus_metrics_text()
+
+    @staticmethod
+    def get_core_metrics_text():
+        util = CoreMetricsUtil()
+        return util.get_prometheus_metrics_text()
+
+    def get(self, request, *args, **kwargs):
+        if not self.is_token_valid(request):
+            return JsonResponse(status=401, data={'error': 'Invalid metrics token'})
+
+        scope = request.query_params.get('scope', 'all')
+        if scope == 'components':
+            metrics_texts = [self.get_components_metrics_text()]
+        elif scope == 'core':
+            metrics_texts = [self.get_core_metrics_text()]
+        else:
+            metrics_texts = [
+                self.get_core_metrics_text(),
+                self.get_components_metrics_text(),
+            ]
+        metrics_text = '\n'.join(metrics_texts)
         return HttpResponse(metrics_text, content_type='text/plain; version=0.0.4; charset=utf-8')
