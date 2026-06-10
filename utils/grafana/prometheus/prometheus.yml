@@ -1,0 +1,27 @@
+# Prometheus scrape config for JumpServer
+#
+# The core service exposes metrics at /api/v1/prometheus/metrics/
+# Scopes:
+#   ?scope=core        application metrics only
+#   ?scope=components  terminal component metrics only
+#   (default)          both
+#
+# If HEALTH_CHECK_TOKEN is configured in JumpServer (config.yml or env),
+# uncomment the authorization block below and put the same token there.
+
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: jumpserver
+    metrics_path: /api/v1/prometheus/metrics/
+    scheme: http
+    # authorization:
+    #   type: Bearer
+    #   credentials: <HEALTH_CHECK_TOKEN>
+    static_configs:
+      - targets:
+          - core:8080
+        labels:
+          service: jumpserver
