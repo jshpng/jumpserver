@@ -732,6 +732,25 @@ class Config(dict):
         'LOKI_LOG_ENABLED': False,
         'LOKI_BASE_URL': 'http://loki:3100',
 
+        # NetBox CMDB 资产同步
+        'NETBOX_SYNC_ENABLED': False,
+        'NETBOX_BASE_URL': '',
+        'NETBOX_API_TOKEN': '',
+        'NETBOX_VERIFY_SSL': True,
+        'NETBOX_SYNC_DEVICES': True,
+        'NETBOX_SYNC_VMS': True,
+        'NETBOX_SYNC_STATUSES': ['active'],
+        'NETBOX_SYNC_ROOT_NODE': 'NetBox',
+        'NETBOX_PLATFORM_MAPPING': {},
+        'NETBOX_DEFAULT_PLATFORM': 'Linux',
+        'NETBOX_SYNC_DELETE_ACTION': 'deactivate',
+        'NETBOX_SYNC_ORG_ID': '',
+        'NETBOX_SYNC_IS_PERIODIC': False,
+        'NETBOX_SYNC_INTERVAL': 24,
+        'NETBOX_SYNC_CRONTAB': '',
+        'NETBOX_WEBHOOK_ENABLED': False,
+        'NETBOX_WEBHOOK_SECRET': '',
+
         'TOOL_USER_ENABLED': False,
 
         # Suggestion api
