@@ -3,6 +3,7 @@
 import requests
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
+from django.db import transaction
 
 from assets.models import Asset, Host, Node, Platform
 from common.utils import get_logger
@@ -199,6 +200,13 @@ class NetBoxImporter:
     # ----- single object upsert / delete -----
 
     def sync_object(self, object_type, data):
+        """
+        Each object is wrapped in its own transaction: the asset signal
+        handlers defer work with transaction.on_commit and (like API
+        requests, which run inside ATOMIC_REQUESTS) expect an atomic
+        block to be active when the multi-table Host insert happens.
+        It also keeps asset + protocols + node + label consistent.
+        """
         object_id = data.get('id')
         name = data.get('name') or 'netbox-{}'.format(object_id)
         address = self.get_address(data)
@@ -207,35 +215,36 @@ class NetBoxImporter:
             self.stats['skipped'] += 1
             return None
 
-        asset = self.find_asset(object_type, object_id)
-        if asset:
-            self.update_asset(asset, name, address, data)
-            self.stats['updated'] += 1
+        with transaction.atomic():
+            asset = self.find_asset(object_type, object_id)
+            if asset:
+                self.update_asset(asset, name, address, data)
+                self.stats['updated'] += 1
+                return asset
+
+            platform = self.get_platform(data)
+            if not platform:
+                logger.error('NetBox sync: platform not found, check '
+                             'NETBOX_DEFAULT_PLATFORM/NETBOX_PLATFORM_MAPPING')
+                self.stats['errors'] += 1
+                return None
+
+            url = data.get('url') or ''
+            asset = Host.objects.create(
+                name=self.get_unique_name(name, object_id),
+                address=address, platform=platform,
+                comment='Synced from NetBox: {}'.format(url),
+            )
+            self.set_protocols_from_platform(asset, platform)
+            node = self.get_node(data)
+            if node:
+                asset.nodes.add(node)
+            label = self.get_label(object_type, object_id)
+            LabeledResource.objects.get_or_create(
+                label=label, res_type=self.asset_ct, res_id=str(asset.id),
+            )
+            self.stats['created'] += 1
             return asset
-
-        platform = self.get_platform(data)
-        if not platform:
-            logger.error('NetBox sync: platform not found, check '
-                         'NETBOX_DEFAULT_PLATFORM/NETBOX_PLATFORM_MAPPING')
-            self.stats['errors'] += 1
-            return None
-
-        url = data.get('url') or ''
-        asset = Host.objects.create(
-            name=self.get_unique_name(name, object_id),
-            address=address, platform=platform,
-            comment='Synced from NetBox: {}'.format(url),
-        )
-        self.set_protocols_from_platform(asset, platform)
-        node = self.get_node(data)
-        if node:
-            asset.nodes.add(node)
-        label = self.get_label(object_type, object_id)
-        LabeledResource.objects.get_or_create(
-            label=label, res_type=self.asset_ct, res_id=str(asset.id),
-        )
-        self.stats['created'] += 1
-        return asset
 
     def update_asset(self, asset, name, address, data):
         update_fields = []
@@ -265,17 +274,18 @@ class NetBoxImporter:
             label__name=self.LABEL_NAME, label__value=key,
             res_type=self.asset_ct,
         )
-        for relation in relations:
-            asset = Asset.objects.filter(id=relation.res_id).first()
-            if not asset:
-                continue
-            if action == DELETE_ACTION_DELETE:
-                asset.delete()
-                self.stats['deleted'] += 1
-            elif asset.is_active:
-                asset.is_active = False
-                asset.save(update_fields=['is_active'])
-                self.stats['deactivated'] += 1
+        with transaction.atomic():
+            for relation in relations:
+                asset = Asset.objects.filter(id=relation.res_id).first()
+                if not asset:
+                    continue
+                if action == DELETE_ACTION_DELETE:
+                    asset.delete()
+                    self.stats['deleted'] += 1
+                elif asset.is_active:
+                    asset.is_active = False
+                    asset.save(update_fields=['is_active'])
+                    self.stats['deactivated'] += 1
 
     # ----- entry points -----
 
