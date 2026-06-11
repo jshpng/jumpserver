@@ -4,6 +4,7 @@ import requests
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
+from django.db.models import Q
 
 from assets.models import Asset, Host, Node, Platform
 from common.utils import get_logger
@@ -189,9 +190,11 @@ class NetBoxImporter:
 
     @staticmethod
     def set_protocols_from_platform(asset, platform):
-        protocols = platform.protocols.filter(default=True)
-        if not protocols:
-            protocols = platform.protocols.filter(primary=True)
+        # e.g. for the builtin Linux platform ssh is primary while sftp is
+        # default, the asset should get both
+        protocols = platform.protocols.filter(
+            Q(primary=True) | Q(required=True) | Q(default=True)
+        )
         if not protocols:
             protocols = platform.protocols.all()
         for p in protocols:
